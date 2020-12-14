@@ -1,4 +1,4 @@
-package AccessToken
+package Code2Session
 
 import (
 	"encoding/json"
@@ -8,22 +8,21 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
-	"time"
 	"zhome-server/WeiChat"
+	"zhome-server/WeiChat/AccessToken"
 	"zhome-server/WeiChat/WeiChatConfig"
 )
 
-type AccessToken struct {
-	accessToken string
-	grant_type  string
-	url         string
-	appid       string
-	secret      string
+type Code2Session struct {
+	grant_type string
+	url        string
+	appid      string
+	appSecret  *AccessToken.AccessToken
 }
 
-func (a *AccessToken) Init() error {
-	a.grant_type = "client_credential"
-	a.url = "https://api.weixin.qq.com/cgi-bin/token"
+func (a *Code2Session) Init() error {
+	a.grant_type = "authorization_code"
+	a.url = "https://api.weixin.qq.com/sns/jscode2session"
 	WeiChat.
 		GetRegisterWeiChat().
 		RequireWeiChatFunction(
@@ -34,36 +33,44 @@ func (a *AccessToken) Init() error {
 					return errors.New("Need *AppID.AppId")
 				}
 				a.appid = id.GetAppID()
-				a.secret = id.GetSecret()
-				err := a.startTimer()
-				if err != nil {
-					log.Error(err.Error())
-					return err
+				return nil
+			})
+	WeiChat.
+		GetRegisterWeiChat().
+		RequireWeiChatFunction(
+			reflect.TypeOf(new(AccessToken.AccessToken)),
+			func(i interface{}) error {
+				id, ok := i.(*AccessToken.AccessToken)
+				if !ok {
+					return errors.New("Need *AccessToken.AccessToken")
 				}
+				a.appSecret = id
 				return nil
 			})
 	return nil
 }
-func (a *AccessToken) getAccessToken() (int, error) {
+func (a *Code2Session) GetSession(js_code string) (string, error) {
 	type weiChatResult struct {
-		access_token string
-		expires_in   int
-		errcode      int
-		errmsg       string
+		openid      string
+		session_key string
+		unionid     string
+		errcode     int
+		errmsg      string
 	}
 	baseURL, err := url.Parse(a.url)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 
 	params := url.Values{}
 	params.Add("grant_type", a.grant_type)
 	params.Add("appid", a.appid)
-	params.Add("secret", a.secret)
+	params.Add("secret", a.appSecret.GetAppSecret())
+	params.Add("js_code", js_code)
 	baseURL.RawQuery = params.Encode()
 	result, err := http.Get(baseURL.String())
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	defer func() {
 		if result != nil {
@@ -75,40 +82,23 @@ func (a *AccessToken) getAccessToken() (int, error) {
 	}()
 	if result.StatusCode != 200 {
 		log.Error("Get weichat access token error")
-		return 0, errors.New("Get weichat access token error")
+		return "", errors.New("Get weichat access token error")
 	}
 	body, err := ioutil.ReadAll(result.Body)
 	var r weiChatResult
 	err = json.Unmarshal(body, &r)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	if r.errcode != 0 {
 		log.Error(r.errmsg)
-		return 0, errors.New(r.errmsg)
+		return "", errors.New(r.errmsg)
 	}
-	a.accessToken = r.access_token
-	return r.expires_in, nil
+	return r.openid, nil
 }
-func (a *AccessToken) Stop() error {
+func (a *Code2Session) Stop() error {
 	return nil
 }
-func (a *AccessToken) startTimer() error {
-	go func() {
-		for {
-			t, err := a.getAccessToken()
-			if err != nil {
-				time.Sleep(time.Second * 10)
-			}
-			time.Sleep(time.Second * time.Duration(t))
-		}
-	}()
-	return nil
-}
-func (a *AccessToken) GetAppSecret() string {
-	return a.accessToken
-}
-
 func init() {
-	WeiChat.GetRegisterWeiChat().RegisterWeiChatFunction(new(AccessToken))
+	WeiChat.GetRegisterWeiChat().RegisterWeiChatFunction(new(Code2Session))
 }
